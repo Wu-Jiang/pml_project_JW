@@ -1,0 +1,140 @@
+---
+title: "Excercise Quality"
+author: "Jiang Wu"
+date: "11/23/2014"
+output: html_document
+---
+### Synopsis:
+With the availability of activity wareable devices such as [Fitbit][1], [Jawbone][3] or the [Nike FuelBand][3], people's activity patterns can be tracked and analyzed. 
+
+[1]: http://www.fitbit.com/ "Fitbit"
+[2]: https://jawbone.com/up "Jawbone"
+[3]: http://store.nike.com/us/en_us/pw/fuelband/90w?cp=usns_kw_AL!1778!3!43364135702!e!!g!nike%20fuelband!c "Nike FuelBand"
+
+However, there hasn't been many focuses on how well people performing exercising. The exercise quality is pretty much a research blank spot in Human Activity Recognition. In this project,we are provided with a raw dataset(both training and testing) collected by [Groupware@LES](http://groupware.les.inf.puc-rio.br/har). Our goal is to find out the powerful predictive models to predict the manner in which they did the exercise.
+
+### Global Setting
+```{r globalsetting, echo=TRUE}
+library(knitr);
+library(caret);
+library(ggplot2);
+library(randomForest);
+set.seed(123123);
+opts_chunk$set(echo=TRUE, fig.path="figures/", fig.keep="high", fig.width=10, fig.height=6,fig.align="center");
+```
+
+### Data Processing
+#### Data Info
+* [Data Source](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv)
+* General Information about [Human Activity Recognition](http://groupware.les.inf.puc-rio.br/har) 
+
+
+#### Data Loading
+```{r dataloading, cache = TRUE}
+#read in the training and testing dataset
+training<-read.csv("./pml-training.csv")
+testing<-read.csv("./pml-testing.csv")
+dim(training)
+```
+
+
+#### Data Pre-Processing
+First Of all, 19622 is a little bit large concerning the computation cost.
+I randomly select 2000 observations from the original training sample.
+```{r sampling}
+select_id<-sample(dim(training)[1],2000,replace=FALSE)
+training<-training[select_id,]
+```
+
+To evaluate the priority of the variables, my strategies are:
+
+* Excluding the less-meaningful data,i.e. those variables with nearly zero variance
+* Exclude the column with too much NAs. My criteria, NA values should not exceed 30% of the total observations
+* Moreover, since the personal data only provide the info about name and time of exercise, there is no valuable information concerning the quality of the exercise (e.g., height, weight,age)and num of windows and "new_window" have no practical meanings other than just being a label, these variables should also exclude from the training set.
+
+
+```{r tidy-up-training}
+#remove zero-variance variables
+removeColumns <-nearZeroVar(training)
+temp <- training[, -removeColumns]
+#remove variables with too much NAs
+temp <- temp[, which(colSums(is.na(temp)) < round(0.3*dim(temp)[1]))] 
+temp<-subset(temp,select=-c(1:6))
+training<-temp
+```
+
+perform the same preprocessing procedure to test data, in order to make sure they have the same variables (except for "classe" in training and "problem_id" in testing) before constructing the prediction model
+
+```{r tidy-up-testing}
+#remove zero-variance variables
+removeColumns <-nearZeroVar(testing) 
+temp <- testing[, -removeColumns]
+#remove variables with too much NAs
+temp <- temp[, which(colSums(is.na(temp)) < round(0.3*dim(temp)[1]))] 
+temp<-subset(temp,select=-c(1:6))
+testing<-temp
+```
+
+
+Check up the discrepancy between training set and testing set
+```{r name-checkup}
+name_discrepancy<-names(training)==names(testing)
+colnames(training)[!name_discrepancy]
+colnames(testing)[!name_discrepancy]
+```
+
+### Preditive Model
+#### My Rationale
+With no further information about the variable meanings, it is not wise to subjectively throwing any variables, which may have potential huge preditive powers.
+Thus, I decide use random forest model, which is equipped with built-in feature importance selection and cross-validation process. 
+
+#### First Round Random Forest
+```{r 1st rf}
+inTrain<-createDataPartition(y=training$classe,
+                             p=0.7,list=FALSE)
+sub_training<-training[inTrain,]
+sub_testing<-training[-inTrain,]
+modFit_rf<-train(sub_training$classe~., data=sub_training,
+              method="rf",prox=TRUE,importance = TRUE)
+```
+
+#### Select the Most Important Variables
+```{r feature selection_1}
+plot(modFit_rf, main="Importance Order of Predictors")
+```
+
+
+Based on the above plot, it can be known that the top 20 variables with highest importance score take up more than 91.5% accuracy. Thus, the final features can be determined
+
+```{r feature selection_2}
+#getting the variable names of the most important 20 variables
+myVar<-varImp(modFit_rf, scale = FALSE)
+vi<-myVar$importance
+vi$max<-apply(vi,1,max)
+finalVar<-rownames(vi[order(-vi$max),])[1:20]
+```
+
+#### Second Round Random Forest
+```{r 2nd rf}
+#reconstruct training and testing sample
+temp<-subset(training, select=finalVar)
+temp<-data.frame(temp,training$classe)
+training<-temp
+names(training)[21]<-"classe"
+#performing same procesure to testing dataset
+temp<-subset(testing, select=finalVar)
+temp<-data.frame(temp,testing$problem_id)
+testing<-temp
+names(testing)[21]<-"problem_id"
+#re-perform the random forest training process
+inTrain<-createDataPartition(y=training$classe,
+                             p=0.7,list=FALSE)
+sub_training<-training[inTrain,]
+sub_testing<-training[-inTrain,]
+modFit_rf_final<-train(sub_training$classe~., data=sub_training,
+                 method="rf",prox=TRUE,importance = TRUE)
+confusionMatrix(sub_testing$classe,predict(modFit_rf_final,sub_testing))
+```
+
+#### Results
+Based on the confussion matrix, the accuracy of this 20-variable random forest model is pretty high (~94%). However, going through 2 rounds of random forest classification, the overfitting problem can not be avoided. The out-of-sample error should be larger than the results of the confusion matrix. But this model works good enough by giving out all the correct answers to the programming assignment.
